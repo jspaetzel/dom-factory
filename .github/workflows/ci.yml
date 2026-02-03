@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-20.04
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["7.2", "7.3", "7.4", "8.0"]
+    env:
+      APP_ENV: development
+      CC_TEST_REPORTER_ID: ${{ secrets.CC_TEST_REPORTER_ID }}
+      COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
+      COVERALLS_TOKEN: ${{ secrets.COVERALLS_TOKEN }}
+      SCRUTINIZER_TOKEN: ${{ secrets.SCRUTINIZER_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: xdebug
+          ini-values: date.timezone=Europe/Berlin
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-source
+
+      - name: Prepare environment
+        run: touch .env
+
+      - name: Code Climate before-build
+        if: env.CC_TEST_REPORTER_ID != ''
+        run: |
+          curl -L https://codeclimate.com/downloads/test-reporter/test-reporter-latest-linux-amd64 > ./cc-test-reporter
+          chmod +x ./cc-test-reporter
+          ./cc-test-reporter before-build
+
+      - name: Run tests
+        id: tests
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p build/logs
+          vendor/bin/phpunit --coverage-clover build/logs/clover.xml
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Scrutinizer coverage upload
+        if: env.SCRUTINIZER_TOKEN != ''
+        run: |
+          wget https://scrutinizer-ci.com/ocular.phar
+          php ocular.phar code-coverage:upload --format=php-clover build/logs/clover.xml
+
+      - name: Coveralls upload
+        if: env.COVERALLS_REPO_TOKEN != '' || env.COVERALLS_TOKEN != ''
+        env:
+          COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
+          COVERALLS_TOKEN: ${{ secrets.COVERALLS_TOKEN }}
+        run: php vendor/bin/coveralls -v
+
+      - name: Code Climate after-build
+        if: env.CC_TEST_REPORTER_ID != ''
+        run: ./cc-test-reporter after-build --exit-code ${{ steps.tests.outputs.exit_code }}
+
+      - name: Fail if tests failed
+        if: steps.tests.outputs.exit_code != '0'
+        run: exit 1
